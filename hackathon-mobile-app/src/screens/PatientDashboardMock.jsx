@@ -36,7 +36,7 @@ const quickActions = [
 
 const bottomNavItems = [
   { label: "Home", icon: "home" },
-  { label: "Consult", icon: "message-circle", route: "PatientConsult" },
+  { label: "Chat", icon: "message-circle", route: "Chat" },
   { label: "Records", icon: "file-text", route: "HealthRecords" },
   { label: "Profile", icon: "user", route: "PatientProfile" },
 ];
@@ -49,6 +49,31 @@ function badgeStyles(tone) {
     return { wrap: { backgroundColor: "#FEF3C7" }, text: { color: "#B45309" } };
   }
   return { wrap: { backgroundColor: "#DCFCE7" }, text: { color: "#15803D" } };
+}
+
+function storedRiskTone(riskLevel) {
+  if (riskLevel === "CRITICAL" || riskLevel === "EMERGENCY" || riskLevel === "HIGH") return "high";
+  if (riskLevel === "MEDIUM") return "medium";
+  return "low";
+}
+
+function storedStatusLabel(riskLevel) {
+  if (riskLevel === "CRITICAL" || riskLevel === "EMERGENCY") return "Emergency referral";
+  if (riskLevel === "HIGH") return "High risk";
+  if (riskLevel === "MEDIUM") return "Medium risk watch";
+  return "Low risk";
+}
+
+function isStoredHighRisk(riskLevel) {
+  return riskLevel === "CRITICAL" || riskLevel === "EMERGENCY" || riskLevel === "HIGH";
+}
+
+function formatStoredReferral(referral) {
+  const urgency = referral?.urgency;
+  if (urgency === "IMMEDIATE") return "Immediate";
+  if (urgency === "WITHIN_24_HOURS") return "Within 24h";
+  if (urgency === "ROUTINE") return "Routine";
+  return null;
 }
 
 export default function PatientDashboardMock() {
@@ -138,7 +163,27 @@ export default function PatientDashboardMock() {
   const normalizedAncInputs = useMemo(() => normalizeAncInputs(ancInputs || {}), [ancInputs]);
   const dashboardAssessment = useMemo(() => assess(normalizedAncInputs), [normalizedAncInputs]);
   const currentRiskTone = riskTone(dashboardAssessment.riskBand);
-  const currentBadge = badgeStyles(currentRiskTone);
+  const latestSavedVisit = useMemo(() => {
+    const visits = Array.isArray(activeUser?._visits) ? [...activeUser._visits] : [];
+    return visits
+      .filter((visit) => visit?.assessment)
+      .sort((a, b) => new Date(b?.visitDate || 0).getTime() - new Date(a?.visitDate || 0).getTime())[0] || null;
+  }, [activeUser]);
+  const latestSavedAssessment = latestSavedVisit?.assessment || null;
+  const dashboardTone = latestSavedAssessment ? storedRiskTone(latestSavedAssessment.riskLevel) : currentRiskTone;
+  const currentBadge = badgeStyles(dashboardTone);
+  const dashboardStatusText = latestSavedAssessment
+    ? storedStatusLabel(latestSavedAssessment.riskLevel)
+    : statusLabel(dashboardAssessment);
+  const dashboardScore = latestSavedAssessment?.score ?? dashboardAssessment.score;
+  const dashboardReasons = latestSavedAssessment?.reasons?.length
+    ? latestSavedAssessment.reasons
+    : dashboardAssessment.reasons;
+  const dashboardReferral = formatStoredReferral(latestSavedAssessment?.referral) || dashboardAssessment.referralLevel;
+  const dashboardDecision = latestSavedAssessment?.referral?.message || dashboardAssessment.decision;
+  const dashboardSummary = latestSavedAssessment
+    ? "Showing the latest saved ANC assessment from your records so the homepage score matches clinical scoring."
+    : "This risk summary is calculated from the patient's saved ANC data and previous records.";
 
   // ── Schedule ANC notifications whenever profile/assessment updates
   useEffect(() => {
@@ -167,6 +212,7 @@ export default function PatientDashboardMock() {
   const isHighRisk =
     dashboardAssessment.riskBand === "HIGH" ||
     dashboardAssessment.riskBand === "EMERGENCY" ||
+    isStoredHighRisk(latestSavedAssessment?.riskLevel) ||
     activeUser?.cdssSummary?.latestRiskLevel === "HIGH";
 
   const handleLogout = () => {
@@ -288,10 +334,10 @@ export default function PatientDashboardMock() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.statusTitle}>Pregnancy Status</Text>
                   <Text style={styles.statusSubtitle}>
-                    Week {normalizedAncInputs.gestationalWeekage || activeUser.pregnancyDetails.gestationalAgeWeeks} · {statusLabel(dashboardAssessment)}
+                    Week {normalizedAncInputs.gestationalWeekage || activeUser.pregnancyDetails.gestationalAgeWeeks} · {dashboardStatusText}
                   </Text>
                   <Text style={styles.statusCaption}>
-                    {dashboardAssessment.decision} · Next visit {dashboardAssessment.nextVisitWeeks === 0 ? "Now" : `${dashboardAssessment.nextVisitWeeks}w`}
+                    {latestSavedAssessment ? `Latest score ${dashboardScore}` : dashboardAssessment.decision} · Next visit {dashboardAssessment.nextVisitWeeks === 0 ? "Now" : `${dashboardAssessment.nextVisitWeeks}w`}
                   </Text>
                 </View>
                 <Feather name="chevron-right" size={20} color="#94A3B8" />
@@ -301,37 +347,37 @@ export default function PatientDashboardMock() {
             <View style={styles.predictionCard}>
               <View style={styles.predictionHeader}>
                 <View>
-                  <Text style={styles.predictionEyebrow}>Home ANC Prediction</Text>
-                  <Text style={styles.predictionTitle}>{statusLabel(dashboardAssessment)}</Text>
+                  <Text style={styles.predictionEyebrow}>{latestSavedAssessment ? "Latest Saved ANC Score" : "Home ANC Prediction"}</Text>
+                  <Text style={styles.predictionTitle}>{dashboardStatusText}</Text>
                 </View>
                 <View style={[styles.predictionBadge, currentBadge.wrap]}>
-                  <Text style={[styles.predictionBadgeText, currentBadge.text]}>Score {dashboardAssessment.score}</Text>
+                  <Text style={[styles.predictionBadgeText, currentBadge.text]}>Score {dashboardScore}</Text>
                 </View>
               </View>
 
               <Text style={styles.predictionSummary}>
-                This risk summary is calculated from the patient's saved ANC data and previous records.
+                {dashboardSummary}
               </Text>
 
               <View style={styles.predictionMetaRow}>
                 <View style={styles.predictionMetaCard}>
                   <Text style={styles.predictionMetaLabel}>Decision</Text>
-                  <Text style={styles.predictionMetaValue}>{dashboardAssessment.decision}</Text>
+                  <Text style={styles.predictionMetaValue}>{dashboardDecision}</Text>
                 </View>
                 <View style={styles.predictionMetaCard}>
                   <Text style={styles.predictionMetaLabel}>Referral</Text>
-                  <Text style={styles.predictionMetaValue}>{dashboardAssessment.referralLevel}</Text>
+                  <Text style={styles.predictionMetaValue}>{dashboardReferral}</Text>
                 </View>
               </View>
 
-              {dashboardAssessment.reasons?.length > 0 ? (
+              {dashboardReasons?.length > 0 ? (
                 <View style={styles.reasonsWrap}>
-                  {dashboardAssessment.reasons.slice(0, 4).map((reason, index) => (
+                  {dashboardReasons.slice(0, 4).map((reason, index) => (
                     <View key={`${reason}-${index}`} style={styles.reasonRow}>
                       <Feather
-                        name={currentRiskTone === "high" ? "alert-triangle" : "check-circle"}
+                        name={dashboardTone === "high" ? "alert-triangle" : "check-circle"}
                         size={14}
-                        color={currentRiskTone === "high" ? "#DC2626" : currentRiskTone === "medium" ? "#B45309" : "#15803D"}
+                        color={dashboardTone === "high" ? "#DC2626" : dashboardTone === "medium" ? "#B45309" : "#15803D"}
                       />
                       <Text style={styles.reasonText}>{reason}</Text>
                     </View>

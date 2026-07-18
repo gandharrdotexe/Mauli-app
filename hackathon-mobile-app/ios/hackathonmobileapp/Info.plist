@@ -44,6 +44,10 @@
       <key>NSAllowsLocalNetworking</key>
       <true/>
     </dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Allow MAULI to use your microphone for voice-to-text chat.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Allow MAULI to convert your speech into chat messages.</string>
     <key>UILaunchStoryboardName</key>
     <string>SplashScreen</string>
     <key>UIRequiredDeviceCapabilities</key>

@@ -19,7 +19,20 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { streamChatMessage } from "../services/api";
 import { Feather } from "@expo/vector-icons";
+import * as Speech from "expo-speech";
 import { offlineMatch, streamOfflineResponse } from "../services/offlineAI";
+
+let ExpoSpeechRecognitionModule = null;
+let useSpeechRecognitionEvent = () => {};
+
+try {
+  const speechRecognition = require("expo-speech-recognition");
+  ExpoSpeechRecognitionModule = speechRecognition.ExpoSpeechRecognitionModule;
+  useSpeechRecognitionEvent = speechRecognition.useSpeechRecognitionEvent;
+} catch {
+  ExpoSpeechRecognitionModule = null;
+  useSpeechRecognitionEvent = () => {};
+}
 
 // ─── Quick question chips ─────────────────────────────────────────────────────
 
@@ -152,9 +165,33 @@ function MarkdownMessage({ text, isUser, onOpenUrl }) {
   return <View>{elements}</View>;
 }
 
+function extractSpeechTranscript(results) {
+  if (!Array.isArray(results)) return "";
+  return results
+    .map((result) => String(result?.transcript || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function plainTextForSpeech(text) {
+  if (typeof text !== "string") return "";
+  return text
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s*/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // ─── Message Bubble ────────────────────────────────────────────────────────────
 
-function MessageBubble({ message, onOpenUrl }) {
+function MessageBubble({ message, onOpenUrl, onSpeak, activeSpeechMessageId }) {
   const isUser = message.role === "user";
   const parsedText = parseInlineMarkdownImages(message.content);
   const eventImages = Array.isArray(message.images) ? message.images : [];
@@ -162,6 +199,7 @@ function MessageBubble({ message, onOpenUrl }) {
   const videos = dedupeByUrl(message.videos, "url");
   const sources = dedupeByUrl(message.sources, "url");
   const hasText = parsedText.text.trim().length > 0;
+  const isSpeaking = activeSpeechMessageId === message.id;
 
   return (
     <View style={[styles.messageRow, isUser ? styles.userMessageRow : styles.assistantMessageRow]}>
@@ -171,7 +209,16 @@ function MessageBubble({ message, onOpenUrl }) {
         </View>
       )}
       <View style={[styles.messageContent, isUser ? styles.userMessageContent : styles.assistantMessageContent]}>
-        {!isUser && <Text style={styles.assistantName}>Mauli</Text>}
+        {!isUser ? (
+          <View style={styles.assistantHeader}>
+            <Text style={styles.assistantName}>Mauli</Text>
+            {hasText ? (
+              <Pressable style={[styles.speakerButton, isSpeaking && styles.speakerButtonActive]} onPress={() => onSpeak?.(message.id, parsedText.text)}>
+                <Feather name={isSpeaking ? "square" : "volume-2"} size={14} color={isSpeaking ? "#FFFFFF" : "#0F766E"} />
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
         <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
           {hasText ? <MarkdownMessage text={parsedText.text} isUser={isUser} onOpenUrl={onOpenUrl} /> : null}
           {!isUser && images.length > 0 ? (
@@ -225,6 +272,8 @@ export default function ChatScreen({ route, navigation }) {
   const headerHeight = useHeaderHeight();
   const listRef = React.useRef(null);
   const abortStreamRef = React.useRef(null);
+  const speechBasePromptRef = React.useRef("");
+  const speechFinalTranscriptRef = React.useRef("");
   const authToken = route?.params?.token;
 
   const [prompt, setPrompt] = React.useState("");
@@ -237,11 +286,70 @@ export default function ChatScreen({ route, navigation }) {
   const [includeWebImages, setIncludeWebImages] = React.useState(false);
   const [offlineMode, setOfflineMode] = React.useState(false);
   const [suggestions, setSuggestions] = React.useState([]);
+  const [speechAvailable, setSpeechAvailable] = React.useState(false);
+  const [isListening, setIsListening] = React.useState(false);
+  const [activeSpeechMessageId, setActiveSpeechMessageId] = React.useState(null);
 
-  React.useEffect(() => { return () => { abortStreamRef.current?.(); }; }, []);
+  React.useEffect(() => {
+    try {
+      setSpeechAvailable(Boolean(ExpoSpeechRecognitionModule?.isRecognitionAvailable?.()));
+    } catch {
+      setSpeechAvailable(false);
+    }
+    return () => {
+      abortStreamRef.current?.();
+      Speech.stop();
+      try {
+        ExpoSpeechRecognitionModule.abort();
+      } catch {
+        // ignore speech cleanup issues during unmount
+      }
+    };
+  }, []);
   React.useEffect(() => {
     requestAnimationFrame(() => { listRef.current?.scrollToEnd({ animated: true }); });
   }, [messages, loading]);
+
+  useSpeechRecognitionEvent("start", () => {
+    setIsListening(true);
+    setError("");
+  });
+
+  useSpeechRecognitionEvent("end", () => {
+    setIsListening(false);
+    speechFinalTranscriptRef.current = "";
+  });
+
+  useSpeechRecognitionEvent("result", (event) => {
+    const transcript = extractSpeechTranscript(event?.results);
+    if (!transcript) return;
+    if (event?.isFinal) {
+      speechFinalTranscriptRef.current = transcript;
+    }
+    const liveTranscript = event?.isFinal ? transcript : speechFinalTranscriptRef.current
+      ? `${speechFinalTranscriptRef.current} ${transcript}`.trim()
+      : transcript;
+    const nextPrompt = [speechBasePromptRef.current, liveTranscript].filter(Boolean).join(" ").trim();
+    setPrompt(nextPrompt);
+  });
+
+  useSpeechRecognitionEvent("nomatch", () => {
+    setError("I couldn't catch that. Please try speaking again.");
+  });
+
+  useSpeechRecognitionEvent("error", (event) => {
+    const speechError = event?.error;
+    if (speechError === "aborted") return;
+    if (speechError === "no-speech" || speechError === "speech-timeout") {
+      setError("No speech detected. Please try again.");
+      return;
+    }
+    if (speechError === "not-allowed" || speechError === "service-not-allowed") {
+      setError("Voice input needs microphone and speech permissions on this device.");
+      return;
+    }
+    setError(event?.message || "Voice input failed. Please try again.");
+  });
 
   function updateMessage(messageId, update) {
     setMessages((prev) =>
@@ -261,9 +369,87 @@ export default function ChatScreen({ route, navigation }) {
     } catch { /* ignore */ }
   }
 
+  async function handleSpeakMessage(messageId, text) {
+    const speakableText = plainTextForSpeech(text);
+    if (!speakableText) return;
+
+    if (activeSpeechMessageId === messageId) {
+      await Speech.stop();
+      setActiveSpeechMessageId(null);
+      return;
+    }
+
+    await Speech.stop();
+    setActiveSpeechMessageId(messageId);
+    Speech.speak(speakableText, {
+      language: "en-IN",
+      pitch: 1,
+      rate: 0.95,
+      onDone: () => setActiveSpeechMessageId(null),
+      onStopped: () => setActiveSpeechMessageId(null),
+      onError: () => {
+        setActiveSpeechMessageId(null);
+        setError("Unable to play the response aloud on this device.");
+      },
+    });
+  }
+
+  function stopVoiceInput() {
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch {
+      setIsListening(false);
+    }
+  }
+
+  async function handleVoiceInput() {
+    if (loading) return;
+
+    if (isListening) {
+      stopVoiceInput();
+      return;
+    }
+
+    let recognitionReady = false;
+    try {
+      recognitionReady = Boolean(ExpoSpeechRecognitionModule?.isRecognitionAvailable?.());
+      setSpeechAvailable(recognitionReady);
+    } catch {
+      recognitionReady = false;
+    }
+
+    if (!recognitionReady) {
+      setError("Voice input is not available in this build yet. Please use a development build on device.");
+      return;
+    }
+
+    try {
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission?.granted) {
+        setError("Microphone and speech permissions are required for voice input.");
+        return;
+      }
+
+      speechBasePromptRef.current = prompt.trim();
+      speechFinalTranscriptRef.current = "";
+      setToolsOpen(false);
+      setError("");
+
+      ExpoSpeechRecognitionModule.start({
+        lang: "en-IN",
+        interimResults: true,
+        continuous: false,
+        addsPunctuation: true,
+        maxAlternatives: 1,
+      });
+    } catch (voiceError) {
+      setError(voiceError?.message || "Unable to start voice input.");
+    }
+  }
+
   function handleSend() {
     const trimmedPrompt = prompt.trim();
-    if (!trimmedPrompt || loading) return;
+    if (!trimmedPrompt || loading || isListening) return;
     if (offlineMode) { handleOfflineSend(trimmedPrompt); return; }
     handleOnlineSend(trimmedPrompt);
   }
@@ -322,6 +508,9 @@ export default function ChatScreen({ route, navigation }) {
   function handleModeToggle() {
     abortStreamRef.current?.();
     abortStreamRef.current = null;
+    Speech.stop();
+    setActiveSpeechMessageId(null);
+    if (isListening) stopVoiceInput();
     setOfflineMode((prev) => !prev);
     setMessages([]); setSuggestions([]); setError(""); setLoading(false); setPrompt(""); setConversationId("");
   }
@@ -329,6 +518,9 @@ export default function ChatScreen({ route, navigation }) {
   function handleNewChat() {
     abortStreamRef.current?.();
     abortStreamRef.current = null;
+    Speech.stop();
+    setActiveSpeechMessageId(null);
+    if (isListening) stopVoiceInput();
     setToolsOpen(false); setConversationId(""); setMessages([]); setSuggestions([]); setError(""); setLoading(false); setPrompt("");
   }
 
@@ -391,7 +583,14 @@ export default function ChatScreen({ route, navigation }) {
         contentContainerStyle={styles.messagesContent}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-        renderItem={({ item }) => <MessageBubble message={item} onOpenUrl={handleOpenUrl} />}
+        renderItem={({ item }) => (
+          <MessageBubble
+            message={item}
+            onOpenUrl={handleOpenUrl}
+            onSpeak={handleSpeakMessage}
+            activeSpeechMessageId={activeSpeechMessageId}
+          />
+        )}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             {/* Mauli welcome card */}
@@ -445,6 +644,13 @@ export default function ChatScreen({ route, navigation }) {
           ))}
         </ScrollView>
       )}
+
+      {isListening ? (
+        <View style={styles.voiceBanner}>
+          <Feather name="mic" size={13} color="#0F766E" />
+          <Text style={styles.voiceBannerText}>Listening... tap the mic again to finish dictation.</Text>
+        </View>
+      ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
@@ -500,9 +706,24 @@ export default function ChatScreen({ route, navigation }) {
             maxLength={4000}
           />
           <Pressable
-            style={[styles.sendButton, offlineMode && styles.sendButtonOffline, (loading || !prompt.trim()) && styles.disabledButton]}
+            style={[
+              styles.micButton,
+              isListening && styles.micButtonActive,
+              (!speechAvailable || loading) && !isListening ? styles.micButtonDisabled : null,
+            ]}
+            onPress={handleVoiceInput}
+            disabled={loading}
+          >
+            <Feather
+              name={isListening ? "square" : "mic"}
+              size={17}
+              color={isListening ? "#FFFFFF" : speechAvailable ? "#0F766E" : "#94A3B8"}
+            />
+          </Pressable>
+          <Pressable
+            style={[styles.sendButton, offlineMode && styles.sendButtonOffline, (loading || !prompt.trim() || isListening) && styles.disabledButton]}
             onPress={handleSend}
-            disabled={loading || !prompt.trim()}
+            disabled={loading || !prompt.trim() || isListening}
           >
             {loading && offlineMode
               ? <Feather name="loader" size={17} color="#ffffff" />
@@ -874,6 +1095,25 @@ const styles = StyleSheet.create({
     color: DARK,
     fontSize: 15,
   },
+  micButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E6F7F5",
+    borderWidth: 1,
+    borderColor: TEAL_BORDER,
+    marginRight: 6,
+  },
+  micButtonActive: {
+    backgroundColor: TEAL,
+    borderColor: TEAL,
+  },
+  micButtonDisabled: {
+    backgroundColor: "#F1F5F9",
+    borderColor: BORDER,
+  },
   sendButton: {
     backgroundColor: TEAL,
     width: 40,
@@ -897,6 +1137,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 6,
     fontSize: 13,
+  },
+  voiceBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#ECFDF5",
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "#A7F3D0",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  voiceBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#0F766E",
+    fontWeight: "600",
   },
 
   // ── Message bubbles
@@ -926,12 +1183,31 @@ const styles = StyleSheet.create({
   messageContent: { flex: 1 },
   userMessageContent: { alignItems: "flex-end" },
   assistantMessageContent: { alignItems: "flex-start" },
+  assistantHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 4,
+    marginLeft: 2,
+  },
   assistantName: {
     fontSize: 12,
     color: TEAL,
     fontWeight: "700",
-    marginBottom: 4,
-    marginLeft: 2,
+  },
+  speakerButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E6F7F5",
+    borderWidth: 1,
+    borderColor: TEAL_BORDER,
+  },
+  speakerButtonActive: {
+    backgroundColor: TEAL,
+    borderColor: TEAL,
   },
   messageBubble: {
     borderRadius: 18,

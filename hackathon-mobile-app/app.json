@@ -16,16 +16,16 @@
       "bundleIdentifier": "com.umairmomin.hackathon-mobile-app",
       "infoPlist": {
         "NSCameraUsageDescription": "Allow MAULI to access your camera to capture ABHA card photos.",
+        "NSMicrophoneUsageDescription": "Allow MAULI to use your microphone for voice-to-text chat.",
         "NSPhotoLibraryUsageDescription": "Allow MAULI to access your photos to upload ABHA card images.",
-        "NSPhotoLibraryAddUsageDescription": "Allow MAULI to save ABHA card images to your library."
+        "NSPhotoLibraryAddUsageDescription": "Allow MAULI to save ABHA card images to your library.",
+        "NSSpeechRecognitionUsageDescription": "Allow MAULI to convert your speech into chat messages."
       }
     },
     "android": {
       "permissions": [
         "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE",
-        "CAMERA",
+        "RECORD_AUDIO",
         "READ_MEDIA_IMAGES",
         "READ_EXTERNAL_STORAGE"
       ],
@@ -37,6 +37,18 @@
       },
       "package": "com.umairmomin.hackathonmobileapp"
     },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow MAULI to use your microphone for voice-to-text chat.",
+          "speechRecognitionPermission": "Allow MAULI to convert your speech into chat messages.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
+        }
+      ]
+    ],
     "web": {
       "favicon": "./assets/favicon.png"
     }
