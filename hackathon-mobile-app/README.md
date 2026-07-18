@@ -2,6 +2,10 @@
 
 Expo React Native app configured for JavaScript + JSX (no TypeScript), ready for rapid hackathon iteration.
 
+<p align="center">
+  <img src="assets/mauli-readme.png" alt="MAULI app splash screen" width="300"/>
+</p>
+
 ## Run the app
 
 1. Install dependencies:
