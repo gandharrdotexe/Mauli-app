@@ -20,7 +20,7 @@
     "expo": "~54.0.0",
     "expo-image-picker": "~17.0.10",
     "expo-linear-gradient": "~15.0.8",
-    "expo-notifications": "^55.0.19",
+    "expo-notifications": "^0.32.16",
     "expo-status-bar": "~3.0.9",
     "framer-motion": "^12.38.0",
     "i18next": "^25.8.18",

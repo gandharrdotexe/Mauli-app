@@ -1,7 +1,9 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Linking,
+  NativeModules,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,18 +15,42 @@ import {
 import { AuthContext } from "../context/AuthContext";
 import { patientMe } from "../services/api";
 import { buildVoiceAgentContext } from "../utils/voiceContext";
+import { buildVoiceWebCallUrl } from "../utils/voiceWebUrl";
 
-const Vapi = Platform.OS === "web" ? null : require("@vapi-ai/react-native").default;
+/**
+ * Daily's RN package touches NativeModules at import time. Never require unless
+ * DailyNativeUtils + WebRTCModule exist (Expo Go has neither).
+ */
+function hasDailyNativePeerStack() {
+  if (Platform.OS === "web") return false;
+  const { DailyNativeUtils, WebRTCModule } = NativeModules;
+  return !!(DailyNativeUtils && WebRTCModule);
+}
+
+function getVapiClass() {
+  if (Platform.OS === "web") return null;
+  if (!hasDailyNativePeerStack()) return null;
+  try {
+    return require("@vapi-ai/react-native").default;
+  } catch {
+    return null;
+  }
+}
 
 const VAPI_API_KEY = process.env.EXPO_PUBLIC_VAPI_API_KEY;
 const VAPI_AGENT_ID = process.env.EXPO_PUBLIC_VAPI_AGENT_ID;
+const WEB_VOICE_BASE_URL = (
+  process.env.EXPO_PUBLIC_VAPI_WEB_CALL_URL ||
+  process.env.EXPO_PUBLIC_VAPI_CALL_URL ||
+  ""
+).trim();
 
 const DEFAULT_ASSISTANT_NAME = "Asha";
 const DEFAULT_VOICE_ID = "Tara";
 const DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant";
 const DEFAULT_TRANSCRIBER_MODEL = "nova-3";
 
-export default function VapiCallScreen() {
+export default function VapiCallScreen({ navigation }) {
   const { user, token, role } = useContext(AuthContext);
   const [resolvedUser, setResolvedUser] = useState(user || null);
   const [loadingProfile, setLoadingProfile] = useState(false);
@@ -34,6 +60,7 @@ export default function VapiCallScreen() {
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [sdkReady, setSdkReady] = useState(false);
   const vapiRef = useRef(null);
 
   useEffect(() => {
@@ -73,6 +100,31 @@ export default function VapiCallScreen() {
     () => buildVoiceAgentContext(resolvedUser, role),
     [resolvedUser, role]
   );
+
+  const canUseNativeVoice = useMemo(() => hasDailyNativePeerStack(), []);
+  const webVoiceUrl = useMemo(
+    () => buildVoiceWebCallUrl(WEB_VOICE_BASE_URL, voiceContext, VAPI_AGENT_ID),
+    [voiceContext]
+  );
+
+  const openWebVoice = useCallback(() => {
+    if (!webVoiceUrl) return;
+    if (Platform.OS === "web") {
+      Linking.openURL(webVoiceUrl).catch(() => {});
+      return;
+    }
+    navigation?.navigate?.("CallScreen", {
+      url: webVoiceUrl,
+      title: "Asha",
+      callSubtitle: "MAULI",
+      voiceSession: true,
+    });
+  }, [navigation, webVoiceUrl]);
+
+  const openWebVoiceInBrowser = useCallback(() => {
+    if (!webVoiceUrl) return;
+    Linking.openURL(webVoiceUrl).catch(() => {});
+  }, [webVoiceUrl]);
 
   const assistantPayload = useMemo(() => {
     const modelPrompt = voiceContext.instruction;
@@ -122,19 +174,46 @@ export default function VapiCallScreen() {
   }, [voiceContext]);
 
   useEffect(() => {
-    if (!VAPI_API_KEY) {
-      setError("Set EXPO_PUBLIC_VAPI_API_KEY in .env to start direct calls.");
-      return;
+    if (!canUseNativeVoice) {
+      setSdkReady(false);
+      vapiRef.current = null;
+      if (!WEB_VOICE_BASE_URL) {
+        setError(
+          "Daily/WebRTC is not in this app (e.g. Expo Go). Set EXPO_PUBLIC_VAPI_WEB_CALL_URL or EXPO_PUBLIC_VAPI_CALL_URL to an HTTPS voice page, then use Open web voice. For native calls, run npx expo run:ios and open that build."
+        );
+      } else {
+        setError("");
+      }
+      return undefined;
     }
 
-    if (!Vapi) {
-      setError("Direct Vapi calling needs a native Expo build, not web.");
-      return;
+    if (!VAPI_API_KEY) {
+      setSdkReady(false);
+      vapiRef.current = null;
+      if (!WEB_VOICE_BASE_URL) {
+        setError("Set EXPO_PUBLIC_VAPI_API_KEY in .env for native in-app calls.");
+      } else {
+        setError("");
+      }
+      return undefined;
+    }
+
+    const VapiClass = getVapiClass();
+    if (!VapiClass) {
+      setSdkReady(false);
+      vapiRef.current = null;
+      if (!WEB_VOICE_BASE_URL) {
+        setError("Native Vapi failed to load. Set EXPO_PUBLIC_VAPI_WEB_CALL_URL for web voice.");
+      } else {
+        setError("");
+      }
+      return undefined;
     }
 
     try {
-      const instance = new Vapi(VAPI_API_KEY);
+      const instance = new VapiClass(VAPI_API_KEY);
       vapiRef.current = instance;
+      setSdkReady(true);
 
       const handleCallStart = () => {
         setCallState("live");
@@ -185,12 +264,14 @@ export default function VapiCallScreen() {
         instance.off("error", handleError);
         instance.stop().catch(() => {});
         vapiRef.current = null;
+        setSdkReady(false);
       };
     } catch (err) {
+      setSdkReady(false);
       setError(err?.message || "Unable to initialize the Vapi client.");
       return undefined;
     }
-  }, []);
+  }, [canUseNativeVoice]);
 
   const startCall = async () => {
     const instance = vapiRef.current;
@@ -239,10 +320,10 @@ export default function VapiCallScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
-        <Text style={styles.kicker}>Vapi direct call</Text>
+        <Text style={styles.kicker}>Vapi</Text>
         <Text style={styles.title}>Asha voice agent</Text>
         <Text style={styles.subtitle}>
-          Starts the call directly from this screen. No hosted web-call page.
+          Native mode needs a dev build with Daily/WebRTC. Web mode uses your HTTPS URL in CallScreen (Expo Go friendly).
         </Text>
       </View>
 
@@ -261,36 +342,71 @@ export default function VapiCallScreen() {
             <Text style={styles.statusText}>{callStatus}</Text>
           </View>
 
-          <View style={styles.buttonRow}>
-            <Pressable
-              style={[styles.button, styles.primaryButton, (starting || callState === "live") && styles.buttonDisabled]}
-              onPress={startCall}
-              disabled={starting || callState === "live" || !VAPI_API_KEY}
-            >
-              {starting ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Start Call</Text>
-              )}
-            </Pressable>
+          {canUseNativeVoice ? (
+            <>
+              <View style={styles.buttonRow}>
+                <Pressable
+                  style={[
+                    styles.button,
+                    styles.primaryButton,
+                    (starting || callState === "live") && styles.buttonDisabled,
+                  ]}
+                  onPress={startCall}
+                  disabled={starting || callState === "live" || !VAPI_API_KEY || !sdkReady}
+                >
+                  {starting ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>Start native call</Text>
+                  )}
+                </Pressable>
 
-            <Pressable
-              style={[styles.button, styles.secondaryButton, (ending || callState !== "live") && styles.buttonDisabled]}
-              onPress={stopCall}
-              disabled={ending || callState !== "live"}
-            >
-              {ending ? (
-                <ActivityIndicator color="#0F766E" />
-              ) : (
-                <Text style={styles.secondaryButtonText}>End Call</Text>
-              )}
-            </Pressable>
-          </View>
+                <Pressable
+                  style={[
+                    styles.button,
+                    styles.secondaryButton,
+                    (ending || callState !== "live") && styles.buttonDisabled,
+                  ]}
+                  onPress={stopCall}
+                  disabled={ending || callState !== "live"}
+                >
+                  {ending ? (
+                    <ActivityIndicator color="#0F766E" />
+                  ) : (
+                    <Text style={styles.secondaryButtonText}>End call</Text>
+                  )}
+                </Pressable>
+              </View>
 
-          <Text style={styles.helperText}>
-            If you want the assistant to use a saved Vapi assistant, set `EXPO_PUBLIC_VAPI_AGENT_ID`.
-            Otherwise the screen can start with a transient assistant configuration.
-          </Text>
+              <Text style={styles.helperText}>
+                Set EXPO_PUBLIC_VAPI_AGENT_ID for a saved assistant, or use the transient assistant from this screen.
+              </Text>
+            </>
+          ) : (
+            <Text style={styles.modeHint}>
+              Native Vapi is unavailable here (no Daily/WebRTC). Use web voice below, or run npx expo run:ios and open that app.
+            </Text>
+          )}
+
+          {webVoiceUrl ? (
+            <View style={styles.webVoiceCard}>
+              <Text style={styles.sectionLabel}>Web voice</Text>
+              <Text style={styles.webVoiceIntro}>
+                Set EXPO_PUBLIC_VAPI_WEB_CALL_URL or EXPO_PUBLIC_VAPI_CALL_URL. Prefer your own minimal page; vapi.ai demo URLs work in a browser but are not ideal inside WebView.
+              </Text>
+              <View style={styles.buttonRow}>
+                <Pressable style={[styles.button, styles.primaryButton]} onPress={openWebVoice}>
+                  <Text style={styles.primaryButtonText}>Open web voice</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.button, styles.secondaryButton]}
+                  onPress={openWebVoiceInBrowser}
+                >
+                  <Text style={styles.secondaryButtonText}>Open in browser</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
         </View>
 
         {error ? (
@@ -315,7 +431,11 @@ export default function VapiCallScreen() {
               )}
             />
           ) : (
-            <Text style={styles.emptyText}>Nothing yet. Start the call and begin speaking.</Text>
+            <Text style={styles.emptyText}>
+              {sdkReady
+                ? "Nothing yet. Start the native call and begin speaking."
+                : "Native transcripts appear here. Web voice shows on your hosted page."}
+            </Text>
           )}
         </View>
       </ScrollView>
@@ -453,6 +573,25 @@ const styles = StyleSheet.create({
   },
   helperText: {
     marginTop: 14,
+    fontSize: 12,
+    lineHeight: 18,
+    color: "#64748B",
+  },
+  modeHint: {
+    marginTop: 12,
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#475569",
+  },
+  webVoiceCard: {
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    gap: 8,
+  },
+  webVoiceIntro: {
+    marginTop: 6,
     fontSize: 12,
     lineHeight: 18,
     color: "#64748B",

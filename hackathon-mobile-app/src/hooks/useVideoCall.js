@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { createSocket } from "../services/socket";
 
 const ICE_SERVERS = [
@@ -45,8 +45,8 @@ export default function useVideoCall({
       webrtcRef.current = WebRTC;
       return WebRTC;
     }
+    if (!NativeModules.WebRTCModule) return null;
     try {
-      // Lazy-load to avoid crashing on web/Expo Go when the native module is missing.
       webrtcRef.current = require("react-native-webrtc");
       return webrtcRef.current;
     } catch {

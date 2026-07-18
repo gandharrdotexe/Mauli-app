@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  NativeModules,
   PanResponder,
   Pressable,
   StyleSheet,
@@ -15,6 +16,7 @@ import useVideoCall from "../hooks/useVideoCall";
 
 const getRTCView = () => {
   if (Platform.OS === "web") return null;
+  if (!NativeModules.WebRTCModule) return null;
   try {
     return require("react-native-webrtc").RTCView;
   } catch {
