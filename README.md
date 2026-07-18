@@ -7,9 +7,8 @@ MAULI is an AI-powered clinical decision support mobile application built for **
 ---
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/gandharrdotexe/Mauli-app/main/assets/mauli-splash.png" alt="MAULI app splash screen" width="300"/>
+  <img src="https://raw.githubusercontent.com/gandharrdotexe/Mauli-app/main/hackathon-mobile-app/assets/mauli-readme.png" alt="MAULI app splash screen" width="300"/>
 </p>
-
 
 
 ## ✨ Key Features
